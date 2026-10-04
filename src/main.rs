@@ -3,6 +3,7 @@ mod config;
 mod mcp;
 mod model;
 mod tools;
+mod verification;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
