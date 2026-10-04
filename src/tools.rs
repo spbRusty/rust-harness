@@ -12,16 +12,37 @@ pub struct ToolInfo {
 
 pub fn native_tools() -> Vec<ToolInfo> {
     vec![
-        ToolInfo { name: "read_file".into(), description: "Read a UTF-8 text file inside the workspace.".into(), input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}) },
-        ToolInfo { name: "write_file".into(), description: "Write a UTF-8 text file inside the workspace.".into(), input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}) },
-        ToolInfo { name: "list_dir".into(), description: "List files and directories inside the workspace.".into(), input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":[]}) },
+        ToolInfo {
+            name: "read_file".into(),
+            description: "Read a UTF-8 text file inside the workspace.".into(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+        },
+        ToolInfo {
+            name: "write_file".into(),
+            description: "Write a UTF-8 text file inside the workspace.".into(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
+        },
+        ToolInfo {
+            name: "list_dir".into(),
+            description: "List files and directories inside the workspace. Path defaults to the workspace root.".into(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string","default":"."}},"required":[]}),
+        },
     ]
 }
 
 #[derive(Debug, Deserialize)]
 struct FileArgs { path: String }
+
 #[derive(Debug, Deserialize)]
 struct WriteArgs { path: String, content: String }
+
+#[derive(Debug, Deserialize)]
+struct ListArgs {
+    #[serde(default = "default_path")]
+    path: String,
+}
+
+fn default_path() -> String { ".".into() }
 
 pub fn execute(workspace: &Path, name: &str, arguments: Value) -> Result<String> {
     match name {
@@ -37,7 +58,7 @@ pub fn execute(workspace: &Path, name: &str, arguments: Value) -> Result<String>
             Ok("written".into())
         }
         "list_dir" => {
-            let args: FileArgs = serde_json::from_value(arguments)?;
+            let args: ListArgs = serde_json::from_value(arguments)?;
             let mut entries = Vec::new();
             for entry in fs::read_dir(safe_path(workspace, &args.path)?)? {
                 let entry = entry?;
@@ -53,7 +74,9 @@ pub fn execute(workspace: &Path, name: &str, arguments: Value) -> Result<String>
 fn safe_path(workspace: &Path, requested: &str) -> Result<std::path::PathBuf> {
     let root = workspace.canonicalize()?;
     let path = root.join(requested);
-    let normalized = if path.exists() { path.canonicalize()? } else {
+    let normalized = if path.exists() {
+        path.canonicalize()?
+    } else {
         let parent = path.parent().unwrap_or(&root).canonicalize()?;
         parent.join(path.file_name().ok_or_else(|| anyhow::anyhow!("invalid path"))?)
     };
