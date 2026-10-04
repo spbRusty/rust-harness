@@ -239,8 +239,7 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
             }
         }
 
-        if !state.changed_files.is_empty()
-            && state.last_verification != Some(VerificationStatus::Passed)
+        if state.verification_pending
             && state.verification_cycles < MAX_VERIFICATION_CYCLES
         {
             let result = verification::verify(&workspace).await;
