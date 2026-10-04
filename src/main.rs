@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
         Commands::Run { prompt } => agent::run(&config, &prompt).await?,
         Commands::Models => model::list_models(&config).await?,
         Commands::Tools => {
-            for tool in tools::native_tools() {
+            for tool in tools::ToolRegistry::native().all() {
                 println!("{} - {}", tool.name, tool.description);
             }
             for server in &config.mcp {
