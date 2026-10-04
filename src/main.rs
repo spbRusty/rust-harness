@@ -3,6 +3,9 @@ mod config;
 mod mcp;
 mod model;
 mod orchestration;
+mod planner;
+mod project_context;
+mod roles;
 mod state;
 mod tools;
 mod verification;
@@ -12,13 +15,14 @@ use clap::{Parser, Subcommand};
 use config::Config;
 
 #[derive(Parser)]
-#[command(name = "harness", version, about = "Local LLM harness")]
+#[command(name = "harness", version, about = "Локальный LLM harness")]
 struct Cli { #[command(subcommand)] command: Commands }
 
 #[derive(Subcommand)]
 enum Commands {
     Run { prompt: String },
     Delegate { role: String, task: String },
+    Context,
     Models,
     Tools,
 }
@@ -33,6 +37,11 @@ async fn main() -> Result<()> {
             let workspace = config.workspace.path.canonicalize()?;
             let result = orchestration::run_named(&config, &role, &workspace, &task).await?;
             println!("{result}");
+        }
+        Commands::Context => {
+            let workspace = config.workspace.path.canonicalize()?;
+            let ctx = project_context::ProjectContext::discover(&workspace)?;
+            println!("{}", ctx.prompt());
         }
         Commands::Models => model::list_models(&config).await?,
         Commands::Tools => {
