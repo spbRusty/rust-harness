@@ -9,6 +9,7 @@ mod roles;
 mod state;
 mod tools;
 mod verification;
+mod workflow;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -22,7 +23,7 @@ struct Cli { #[command(subcommand)] command: Commands }
 enum Commands {
     Run { prompt: String },
     Delegate { role: String, task: String },
-    Context,
+    Task { prompt: String },
     Models,
     Tools,
 }
@@ -38,10 +39,10 @@ async fn main() -> Result<()> {
             let result = orchestration::run_named(&config, &role, &workspace, &task).await?;
             println!("{result}");
         }
-        Commands::Context => {
+        Commands::Task { prompt } => {
             let workspace = config.workspace.path.canonicalize()?;
-            let ctx = project_context::ProjectContext::discover(&workspace)?;
-            println!("{}", ctx.prompt());
+            let result = workflow::run(&config, &workspace, &prompt).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Commands::Models => model::list_models(&config).await?,
         Commands::Tools => {
