@@ -43,31 +43,43 @@ async fn verify_node(workspace: &Path) -> Result<String> {
 }
 
 async fn run(workspace: &Path, program: &str, args: &[&str]) -> Result<String> {
-    let output = timeout(
+    let output = match timeout(
         Duration::from_secs(TIMEOUT_SECS),
         Command::new(program)
             .args(args)
             .current_dir(workspace)
             .stdin(Stdio::null())
             .output(),
-    ).await??;
+    ).await {
+        Ok(result) => result?,
+        Err(_) => {
+            return Ok(json!({
+                "status": "error",
+                "error": format!("{program} timed out after {TIMEOUT_SECS}s")
+            }).to_string());
+        }
+    };
 
     let status = if output.status.success() { "passed" } else { "failed" };
-    let mut text = format!("status: {status}\nexit_code: {:?}\n", output.status.code());
+    let mut details = format!("exit_code: {:?}\n", output.status.code());
 
     if !output.stdout.is_empty() {
-        text.push_str("stdout:\n");
-        text.push_str(&String::from_utf8_lossy(&output.stdout));
+        details.push_str("stdout:\n");
+        details.push_str(&String::from_utf8_lossy(&output.stdout));
     }
     if !output.stderr.is_empty() {
-        text.push_str("\nstderr:\n");
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        details.push_str("\nstderr:\n");
+        details.push_str(&String::from_utf8_lossy(&output.stderr));
     }
 
-    if text.len() > MAX_OUTPUT {
-        text.truncate(MAX_OUTPUT);
-        text.push_str("\n...[verification output truncated]...");
+    if details.len() > MAX_OUTPUT {
+        details.truncate(MAX_OUTPUT);
+        details.push_str("\n...[verification output truncated]...");
     }
 
-    Ok(text)
+    Ok(json!({
+        "status": status,
+        "command": format!("{program} {}", args.join(" ")),
+        "details": details
+    }).to_string())
 }
