@@ -4,6 +4,22 @@ use serde_json::{json, Value};
 use crate::{config::Config, mcp::McpClient, model, tools};
 
 const MAX_STEPS: usize = 12;
+const MAX_CONTEXT_CHARS: usize = 48_000;
+
+fn trim_context(messages: &mut Vec<model::Message>) {
+    let mut total = messages.iter().map(|m| m.content.as_deref().unwrap_or("").len()).sum::<usize>();
+    if total <= MAX_CONTEXT_CHARS { return; }
+    let mut i = 2;
+    while total > MAX_CONTEXT_CHARS && i < messages.len() {
+        if messages[i].role == "tool" {
+            if let Some(content) = messages[i].content.take() {
+                total -= content.len();
+                messages[i].content = Some("[previous tool result pruned]".into());
+            }
+        }
+        i += 1;
+    }
+}
 
 pub async fn run(config: &Config, prompt: &str) -> Result<()> {
     let workspace = config
@@ -90,6 +106,8 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
                     Ok(value) => value.to_string(),
                     Err(error) => json!({"error": error.to_string()}).to_string(),
                 };
+
+                trim_context(&mut messages);
 
                 messages.push(model::Message {
                     role: "tool".into(),
