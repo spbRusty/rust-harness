@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use crate::{config::Config, mcp::McpClient, model, tools};
+use crate::{config::Config, mcp::McpClient, model, tools, verification};
 
 const MAX_STEPS: usize = 12;
 const MAX_CONTEXT_CHARS: usize = 48_000;
+const MAX_VERIFICATION_CYCLES: usize = 3;
 
 fn trim_context(messages: &mut Vec<model::Message>) {
     let mut total = messages.iter().map(|m| m.content.as_deref().unwrap_or("").len()).sum::<usize>();
@@ -42,22 +43,69 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
         mcp_clients.push((server.name.clone(), client));
     }
 
-    let system = format!("You are a local coding agent. Workspace: {}. Work iteratively and use tools instead of guessing.", workspace.display());
+    let system = format!(
+        "You are a local coding agent. Workspace: {}. Work iteratively and use tools instead of guessing. After changing files, the harness automatically runs verification. Treat a failed verification as actionable feedback and fix the underlying problem before declaring the task complete.",
+        workspace.display()
+    );
     let ollama_tools = registry.ollama_definitions();
     let mut messages = vec![
         model::Message { role: "system".into(), content: Some(system), tool_calls: None, tool_name: None },
         model::Message { role: "user".into(), content: Some(prompt.into()), tool_calls: None, tool_name: None },
     ];
+    let mut verification_cycles = 0;
 
     for _ in 0..MAX_STEPS {
         let assistant = model::chat(config, &messages, &ollama_tools).await?;
         if let Some(tool_calls) = &assistant.tool_calls {
-            if tool_calls.is_empty() { println!("{}", assistant.content.unwrap_or_default()); return Ok(()); }
+            if tool_calls.is_empty() {
+                println!("{}", assistant.content.unwrap_or_default());
+                return Ok(());
+            }
+
             messages.push(assistant.clone());
+            let mut changed_files = false;
+
             for call in tool_calls {
-                let result = execute_call(&workspace, config, &registry, &mut mcp_clients, &call.function.name, call.function.arguments.clone()).await;
-                let content = match result { Ok(value) => value.to_string(), Err(error) => json!({"error": error.to_string()}).to_string() };
-                messages.push(model::Message { role: "tool".into(), content: Some(content), tool_calls: None, tool_name: Some(call.function.name.clone()) });
+                if call.function.name == "write_file" {
+                    changed_files = true;
+                }
+
+                let result = execute_call(
+                    &workspace,
+                    config,
+                    &registry,
+                    &mut mcp_clients,
+                    &call.function.name,
+                    call.function.arguments.clone(),
+                ).await;
+
+                let content = match result {
+                    Ok(value) => value.to_string(),
+                    Err(error) => json!({"error": error.to_string()}).to_string(),
+                };
+
+                messages.push(model::Message {
+                    role: "tool".into(),
+                    content: Some(content),
+                    tool_calls: None,
+                    tool_name: Some(call.function.name.clone()),
+                });
+                trim_context(&mut messages);
+            }
+
+            if changed_files && verification_cycles < MAX_VERIFICATION_CYCLES {
+                verification_cycles += 1;
+                let result = verification::verify(&workspace).await;
+                let content = match result {
+                    Ok(value) => value,
+                    Err(error) => json!({"status":"error","error":error.to_string()}).to_string(),
+                };
+                messages.push(model::Message {
+                    role: "tool".into(),
+                    content: Some(content),
+                    tool_calls: None,
+                    tool_name: Some("verification".into()),
+                });
                 trim_context(&mut messages);
             }
         } else {
@@ -65,6 +113,7 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
             return Ok(());
         }
     }
+
     anyhow::bail!("agent reached the maximum of {MAX_STEPS} steps")
 }
 
@@ -87,8 +136,12 @@ async fn execute_call(
 
     if let Some(rest) = tool_name.strip_prefix("mcp__") {
         let (server, name) = rest.split_once("__").context("invalid MCP tool name")?;
-        let client = mcp_clients.iter_mut().find(|(configured_name, _)| configured_name == server).context("MCP server not found")?;
+        let client = mcp_clients
+            .iter_mut()
+            .find(|(configured_name, _)| configured_name == server)
+            .context("MCP server not found")?;
         return Ok(client.1.call_tool(name, arguments).await?);
     }
+
     Ok(json!({"content": tools::execute(workspace, tool_name, arguments)?}))
 }
