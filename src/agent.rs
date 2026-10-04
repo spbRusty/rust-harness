@@ -55,7 +55,7 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
             if tool_calls.is_empty() { println!("{}", assistant.content.unwrap_or_default()); return Ok(()); }
             messages.push(assistant.clone());
             for call in tool_calls {
-                let result = execute_call(&workspace, &mut mcp_clients, &call.function.name, call.function.arguments.clone()).await;
+                let result = execute_call(&workspace, config, &registry, &mut mcp_clients, &call.function.name, call.function.arguments.clone()).await;
                 let content = match result { Ok(value) => value.to_string(), Err(error) => json!({"error": error.to_string()}).to_string() };
                 messages.push(model::Message { role: "tool".into(), content: Some(content), tool_calls: None, tool_name: Some(call.function.name.clone()) });
                 trim_context(&mut messages);
@@ -68,7 +68,19 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
     anyhow::bail!("agent reached the maximum of {MAX_STEPS} steps")
 }
 
-async fn execute_call(workspace: &std::path::Path, mcp_clients: &mut [(String, McpClient)], tool_name: &str, arguments: Value) -> Result<Value> {
+async fn execute_call(
+    workspace: &std::path::Path,
+    config: &Config,
+    registry: &tools::ToolRegistry,
+    mcp_clients: &mut [(String, McpClient)],
+    tool_name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    let permission = registry.find(tool_name).map(|tool| tool.permission.as_str()).unwrap_or("execute");
+    if !config.permissions.allows(permission) {
+        anyhow::bail!("tool permission denied");
+    }
+
     if let Some(rest) = tool_name.strip_prefix("mcp__") {
         let (server, name) = rest.split_once("__").context("invalid MCP tool name")?;
         let client = mcp_clients.iter_mut().find(|(configured_name, _)| configured_name == server).context("MCP server not found")?;
