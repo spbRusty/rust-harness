@@ -32,8 +32,8 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
     let tool_text = serde_json::to_string(&json!({"native":native,"mcp":mcp_tools}))?;
     let mut conversation = format!(
         "You are a local coding agent. Workspace: {}\nAvailable tools: {}\n\nUser task: {}\n\n\
-         If you need a tool, respond with ONLY JSON: \"tool\":\"name\", \"arguments\":{{...}}.\
-         For MCP tools include \"mcp_server\":\"server\".\
+         If you need a tool, respond with ONLY a JSON object containing the keys \"tool\" and \"arguments\".\
+         For MCP tools also include the key \"mcp_server\".\
          Arguments must exactly match the tool input schema. Never omit required arguments.\
          When finished, answer normally.",
         workspace.display(), tool_text, prompt
