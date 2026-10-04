@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use crate::{config::Config, mcp::McpClient, model, tools};
 
-const MAX_STEPS: usize = 8;
+const MAX_STEPS: usize = 12;
 
 pub async fn run(config: &Config, prompt: &str) -> Result<()> {
     let workspace = config.workspace.path.canonicalize().context("workspace does not exist")?;
@@ -24,12 +24,12 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
     }
 
     let tool_text = serde_json::to_string(&json!({"native":native,"mcp":mcp_tools}))?;
-    let mut conversation = format!("You are a local coding agent. Workspace: {}\nAvailable tools: {}\n\nUser task: {}\n\nIf you need a tool, respond with ONLY JSON: {{\"tool\":\"name\",\"arguments\":{{...}}}}. For MCP tools use {{\"mcp_server\":\"server\",\"tool\":\"name\",\"arguments\":{{...}}}}. When finished, answer normally.", workspace.display(), tool_text, prompt);
+    let mut conversation = format!("You are a local coding agent. Workspace: {}\nAvailable tools: {}\n\nUser task: {}\n\nIf you need a tool, respond with ONLY JSON: {{\"tool\":\"name\",\"arguments\":{{...}}}}. For MCP tools use {{\"mcp_server\":\"server\",\"tool\":\"name\",\"arguments\":{{...}}}}. Arguments must exactly match the tool input schema. Never omit required arguments. When finished, answer normally.", workspace.display(), tool_text, prompt);
 
     for _ in 0..MAX_STEPS {
         let answer = model::generate(config, &conversation).await?;
         if let Some(call) = parse_tool_call(&answer) {
-            let result = if let Some(server) = call.get("mcp_server").and_then(Value::as_str) {
+            let result = execute_call(&workspace, &mut mcp_clients, &call).await;\n            match result {\n                Ok(result) => {
                 let tool_name = call.get("tool").and_then(Value::as_str).context("missing MCP tool")?;
                 let args = call.get("arguments").cloned().unwrap_or_else(|| json!({}));
                 let client = mcp_clients.iter_mut().find(|(name, _)| name == server).context("MCP server not found")?;
@@ -38,14 +38,28 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
                 let tool_name = call.get("tool").and_then(Value::as_str).context("missing tool")?;
                 let args = call.get("arguments").cloned().unwrap_or_else(|| json!({}));
                 json!({"content": tools::execute(&workspace, tool_name, args)?})
-            };
-            conversation.push_str(&format!("\n\nAssistant tool call: {}\nTool result: {}\nContinue the task.", answer, result));
-        } else {
-            println!("{answer}");
+                    conversation.push_str(&format!("\n\nAssistant tool call: {}\nTool result: {}\nContinue the task.", answer, result));\n                }\n                Err(error) => {\n                    conversation.push_str(&format!("\n\nAssistant tool call: {}\nTool error: {}. Fix the arguments and retry the tool call. Do not repeat the same invalid call.\nContinue the task.", answer, error));\n                }\n            }
+        } else {\n            println!("{answer}");
             return Ok(());
         }
     }
     anyhow::bail!("agent reached the maximum of {MAX_STEPS} steps")
+}
+
+async fn execute_call(
+    workspace: &std::path::Path,
+    mcp_clients: &mut [(String, McpClient)],
+    call: &Value,
+) -> Result<Value> {
+    let tool_name = call.get("tool").and_then(Value::as_str).context("missing tool name")?;
+    let args = call.get("arguments").cloned().unwrap_or_else(|| json!({}));
+
+    if let Some(server) = call.get("mcp_server").and_then(Value::as_str) {
+        let client = mcp_clients.iter_mut().find(|(name, _)| name == server).context("MCP server not found")?;
+        Ok(client.1.call_tool(tool_name, args).await?)
+    } else {
+        Ok(json!({"content": tools::execute(workspace, tool_name, args)?}))
+    }
 }
 
 fn parse_tool_call(text: &str) -> Option<Value> {
