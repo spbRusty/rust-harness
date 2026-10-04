@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod mcp;
 mod model;
+mod state;
 mod tools;
 mod verification;
 
