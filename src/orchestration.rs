@@ -30,17 +30,25 @@ impl Role {
 pub async fn run(config: &Config, role: Role, workspace: &Path, task: &str) -> Result<String> {
     let registry = tools::ToolRegistry::native_filtered(|tool| role.allowed(&tool.name));
     let definitions = registry.ollama_definitions();
+    println!("[{role:?}] start: {task}");
+
     let system = format!("{}\nWorkspace: {}\nFinish with a compact report for the parent agent.", role.instructions(), workspace.display());
     let mut messages = vec![
         model::Message { role: "system".into(), content: Some(system), tool_calls: None, tool_name: None },
         model::Message { role: "user".into(), content: Some(task.into()), tool_calls: None, tool_name: None },
     ];
 
-    for _ in 0..6 {
+    for iteration in 1..=6 {
+        println!("[{role:?}] model iteration {iteration}/6");
         let assistant = model::chat(config, &messages, &definitions).await?;
-        let Some(calls) = &assistant.tool_calls else { return Ok(assistant.content.unwrap_or_default()); };
+        let Some(calls) = &assistant.tool_calls else {
+            let answer = assistant.content.clone().unwrap_or_default();
+            println!("[{role:?}] finished");
+            return Ok(answer);
+        };
         messages.push(assistant.clone());
         for call in calls {
+            println!("[{role:?}] tool: {}", call.function.name);
             if registry.find(&call.function.name).is_none() {
                 messages.push(model::Message { role: "tool".into(), content: Some(json!({"error":"tool not allowed for this role"}).to_string()), tool_calls: None, tool_name: Some(call.function.name.clone()) });
                 continue;
@@ -50,7 +58,11 @@ pub async fn run(config: &Config, role: Role, workspace: &Path, task: &str) -> R
             } else {
                 tools::execute(workspace, &call.function.name, call.function.arguments.clone()).map(Value::String)
             };
-            let content = match result { Ok(value) => value.to_string(), Err(error) => json!({"error": error.to_string()}).to_string() };
+            let content = match result {
+                Ok(value) => value.to_string(),
+                Err(error) => json!({"error": error.to_string()}).to_string(),
+            };
+            println!("[{role:?}] tool result: {}", if content.len() > 160 { format!("{}...", &content[..160]) } else { content.clone() });
             messages.push(model::Message { role: "tool".into(), content: Some(content), tool_calls: None, tool_name: Some(call.function.name.clone()) });
         }
     }
