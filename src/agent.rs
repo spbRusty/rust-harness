@@ -116,6 +116,8 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
                     tool_name: Some(call.function.name.clone()),
                 });
             }
+
+            trim_context(&mut messages);
         } else {
             println!("{}", assistant.content.unwrap_or_default());
             return Ok(());
