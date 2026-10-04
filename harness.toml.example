@@ -5,7 +5,13 @@ name = "qwen2.5:7b"
 [workspace]
 path = "."
 
-# MCP servers can be enabled later without changing the Rust core.
+[permissions]
+read = true
+write = true
+execute = true
+delegate = true
+
+# MCP servers can be enabled later without изменения Rust core.
 # [[mcp]]
 # name = "playwright"
 # command = "npx"
