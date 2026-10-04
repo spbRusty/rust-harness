@@ -10,13 +10,42 @@ pub struct Config {
     pub workspace: WorkspaceConfig,
     #[serde(default)]
     pub mcp: Vec<McpConfig>,
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { model: ModelConfig::default(), workspace: WorkspaceConfig::default(), mcp: Vec::new() }
+        Self { model: ModelConfig::default(), workspace: WorkspaceConfig::default(), mcp: Vec::new(), permissions: PermissionsConfig::default() }
     }
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionsConfig {
+    #[serde(default = "default_true")]
+    pub read: bool,
+    #[serde(default = "default_true")]
+    pub write: bool,
+    #[serde(default)]
+    pub execute: bool,
+}
+
+impl Default for PermissionsConfig {
+    fn default() -> Self { Self { read: true, write: true, execute: false } }
+}
+
+impl PermissionsConfig {
+    pub fn allows(&self, permission: &str) -> bool {
+        match permission {
+            "read" => self.read,
+            "write" => self.write,
+            "execute" => self.execute,
+            _ => false,
+        }
+    }
+}
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
