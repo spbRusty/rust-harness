@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-
 use crate::{config::Config, mcp::McpClient, model, tools};
 
 const MAX_STEPS: usize = 12;
@@ -32,10 +31,9 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
         if let Some(items) = result.get("tools").and_then(Value::as_array) {
             for tool in items {
                 let Some(name) = tool.get("name").and_then(Value::as_str) else { continue; };
-                let description = format!("[MCP server: {}] {}", server.name, tool.get("description").and_then(Value::as_str).unwrap_or(""));
                 registry.register(tools::ToolInfo {
                     name: format!("mcp__{}__{}", server.name, name),
-                    description,
+                    description: format!("[MCP server: {}] {}", server.name, tool.get("description").and_then(Value::as_str).unwrap_or("")),
                     input_schema: tool.get("inputSchema").cloned().unwrap_or_else(|| json!({"type":"object"})),
                     permission: "execute".into(),
                 });
@@ -44,7 +42,7 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
         mcp_clients.push((server.name.clone(), client));
     }
 
-    let system = format!("You are a local coding agent. Workspace: {}. Work iteratively and use tools instead of guessing. For project inspection, establish structure, locate relevant code, then read the files needed. Complete the requested inspection or change before answering.", workspace.display());
+    let system = format!("You are a local coding agent. Workspace: {}. Work iteratively and use tools instead of guessing.", workspace.display());
     let ollama_tools = registry.ollama_definitions();
     let mut messages = vec![
         model::Message { role: "system".into(), content: Some(system), tool_calls: None, tool_name: None },
