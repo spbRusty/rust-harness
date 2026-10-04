@@ -28,12 +28,24 @@ struct ReviewResult {
 pub async fn build_plan(config: &Config, workspace: &Path, goal: &str) -> Result<Plan> {
     let context = ProjectContext::discover(workspace)?;
     let prompt = format!(
-        "Ты Planner. Не меняй файлы.\n{}\n\nЦель: {}\n\n         Верни ТОЛЬКО JSON: {{"goal":"...","steps":[{{"id":1,"description":"...","verification":"..."}}]}}.          Максимум {} коротких последовательных шагов.",
-        context.prompt(), goal, MAX_PLAN_STEPS
+        "Ты Planner. Не меняй файлы.\n{}\n\nЦель: {}\n\n         Верни ТОЛЬКО JSON: {{\"goal\":\"...\",\"steps\":[{{\"id\":1,\"description\":\"...\",\"verification\":\"...\"}}]}}.          Максимум {} коротких последовательных шагов.",
+        context.prompt(),
+        goal,
+        MAX_PLAN_STEPS
     );
     let messages = vec![
-        model::Message { role: "system".into(), content: Some("Ты Planner coding harness.".into()), tool_calls: None, tool_name: None },
-        model::Message { role: "user".into(), content: Some(prompt), tool_calls: None, tool_name: None },
+        model::Message {
+            role: "system".into(),
+            content: Some("Ты Planner coding harness.".into()),
+            tool_calls: None,
+            tool_name: None,
+        },
+        model::Message {
+            role: "user".into(),
+            content: Some(prompt),
+            tool_calls: None,
+            tool_name: None,
+        },
     ];
     let response = model::chat(config, &messages, &[]).await?;
     let text = response.content.unwrap_or_default();
@@ -42,8 +54,12 @@ pub async fn build_plan(config: &Config, workspace: &Path, goal: &str) -> Result
 }
 
 fn extract_json(text: &str) -> Result<String> {
-    let start = text.find('{').ok_or_else(|| anyhow::anyhow!("planner did not return JSON"))?;
-    let end = text.rfind('}').ok_or_else(|| anyhow::anyhow!("planner returned incomplete JSON"))?;
+    let start = text
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("planner did not return JSON"))?;
+    let end = text
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("planner returned incomplete JSON"))?;
     Ok(text[start..=end].to_string())
 }
 
@@ -68,7 +84,7 @@ fn compact_feedback(feedback: &[String]) -> String {
 
 fn review_prompt(step_id: usize, description: &str, verification: &str) -> String {
     format!(
-        "Ты Reviewer. Не меняй файлы. Независимо проверь текущий workspace против шага {}.          Шаг: {}. Требование: {}.          Верни ТОЛЬКО JSON вида {{"status":"pass|fail","findings":["..."]}}.          status=pass только если требование реально выполнено; иначе fail.",
+        "Ты Reviewer. Не меняй файлы. Независимо проверь текущий workspace против шага {}.\n         Шаг: {}. Требование: {}.\n         Верни ТОЛЬКО JSON вида {{\"status\":\"pass|fail\",\"findings\":[\"...\"]}}.\n         status=pass только если требование реально выполнено; иначе fail.",
         step_id, description, verification
     )
 }
@@ -91,15 +107,21 @@ pub async fn run(config: &Config, workspace: &Path, goal: &str) -> Result<Workfl
     for step in &plan.steps {
         let context = compact_feedback(&feedback);
         let executor_prompt = format!(
-            "Ты Executor. Выполни ТОЛЬКО этот шаг.\nЦель: {}\nШаг {}: {}\nПроверка: {}\n{}",
+            "Ты Executor. Выполни ТОЛЬКО этот шаг.\n             Цель: {}\nШаг {}: {}\nПроверка: {}\n{}",
             goal,
             step.id,
             step.description,
             step.verification,
-            if context.is_empty() { String::new() } else { format!("Предыдущая обратная связь:\n{}", context) }
+            if context.is_empty() {
+                String::new()
+            } else {
+                format!("Предыдущая обратная связь:\n{}", context)
+            }
         );
 
-        let result = crate::orchestration::run_named(config, "executor", workspace, &executor_prompt).await?;
+        let result =
+            crate::orchestration::run_named(config, "executor", workspace, &executor_prompt)
+                .await?;
         feedback.push(format!("Executor step {}: {}", step.id, result));
 
         let review = crate::orchestration::run_named(
@@ -107,7 +129,8 @@ pub async fn run(config: &Config, workspace: &Path, goal: &str) -> Result<Workfl
             "reviewer",
             workspace,
             &review_prompt(step.id, &step.description, &step.verification),
-        ).await?;
+        )
+        .await?;
         feedback.push(format!("Reviewer step {}: {}", step.id, review));
 
         let parsed_review = match parse_review(&review) {
@@ -131,27 +154,45 @@ pub async fn run(config: &Config, workspace: &Path, goal: &str) -> Result<Workfl
 
         let mut repaired = false;
         let mut findings = parsed_review.findings.join("\n");
+
         for attempt in 1..=MAX_REPAIRS {
             let repair_prompt = format!(
-                "Ты Executor. Исправь ТОЛЬКО текущий шаг после замечаний Reviewer.                  Не начинай задачу заново. После исправления проверь результат.\n                 Цель: {}\nШаг {}: {}\nТребование проверки: {}\n                 Замечания Reviewer:\n{}\nПопытка исправления: {}",
-                goal, step.id, step.description, step.verification, findings, attempt
+                "Ты Executor. Исправь ТОЛЬКО текущий шаг после замечаний Reviewer.\n                 Не начинай задачу заново. После исправления проверь результат.\n                 Цель: {}\nШаг {}: {}\nТребование проверки: {}\n                 Замечания Reviewer:\n{}\nПопытка исправления: {}",
+                goal,
+                step.id,
+                step.description,
+                step.verification,
+                findings,
+                attempt
             );
 
-            let repair = crate::orchestration::run_named(config, "executor", workspace, &repair_prompt).await?;
-            feedback.push(format!("Executor repair {} step {}: {}", attempt, step.id, repair));
+            let repair =
+                crate::orchestration::run_named(config, "executor", workspace, &repair_prompt)
+                    .await?;
+            feedback.push(format!(
+                "Executor repair {} step {}: {}",
+                attempt, step.id, repair
+            ));
 
             let repair_review = crate::orchestration::run_named(
                 config,
                 "reviewer",
                 workspace,
                 &review_prompt(step.id, &step.description, &step.verification),
-            ).await?;
-            feedback.push(format!("Reviewer repair {} step {}: {}", attempt, step.id, repair_review));
+            )
+            .await?;
+            feedback.push(format!(
+                "Reviewer repair {} step {}: {}",
+                attempt, step.id, repair_review
+            ));
 
             let parsed = match parse_review(&repair_review) {
                 Ok(value) => value,
                 Err(error) => {
-                    feedback.push(format!("Reviewer parse error repair {} step {}: {}", attempt, step.id, error));
+                    feedback.push(format!(
+                        "Reviewer parse error repair {} step {}: {}",
+                        attempt, step.id, error
+                    ));
                     findings = error.to_string();
                     continue;
                 }
@@ -193,8 +234,8 @@ mod tests {
     #[test]
     fn extracts_json() {
         assert_eq!(
-            extract_json("answer {"goal":"x"}").unwrap(),
-            "{"goal":"x"}"
+            extract_json(r#"answer {"goal":"x"}"#).unwrap(),
+            r#"{"goal":"x"}"#
         );
     }
 
