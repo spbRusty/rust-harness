@@ -5,6 +5,8 @@ use serde_json::Value;
 
 use crate::config::Config;
 
+const MODEL_TIMEOUT_SECS: u64 = 120;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
@@ -49,11 +51,16 @@ pub async fn chat(config: &Config, messages: &[Message], tools: &[Value]) -> Res
         stream: false,
     };
 
-    let response = Client::new()
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(MODEL_TIMEOUT_SECS))
+        .build()?;
+
+    let response = client
         .post(url)
         .json(&body)
         .send()
-        .await?
+        .await
+        .map_err(|error| anyhow::anyhow!("model request failed after {MODEL_TIMEOUT_SECS}s timeout: {error}"))?
         .error_for_status()?;
 
     Ok(response.json::<ChatResponse>().await?.message)
