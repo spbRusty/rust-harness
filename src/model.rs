@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,8 +33,4 @@ pub async fn list_models(config: &Config) -> Result<()> {
         anyhow::bail!("Ollama returned an unexpected /api/tags response");
     }
     Ok(())
-}
-
-pub fn ensure_reachable_error(error: reqwest::Error) -> anyhow::Error {
-    anyhow::anyhow!("cannot reach Ollama: {error}. Is `ollama serve` running?")
 }
