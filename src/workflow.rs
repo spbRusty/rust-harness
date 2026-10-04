@@ -65,8 +65,41 @@ pub async fn run(config: &Config, workspace: &Path, goal: &str) -> Result<Workfl
 
         if review.trim_start().to_ascii_uppercase().contains("PASS") {
             completed.push(step.id);
-        } else {
-            return Ok(WorkflowResult { goal: goal.into(), plan: Some(plan), completed_steps: completed, status: "failed".into(), feedback });
+            continue;
+        }
+
+        const MAX_REPAIRS: usize = 2;
+        let mut repaired = false;
+        for attempt in 1..=MAX_REPAIRS {
+            let repair_prompt = format!(
+                "Ты Executor. Исправь только текущий шаг после замечаний Reviewer.                  Не начинай задачу заново. Проверь результат после исправления.                 \nЦель: {}\nШаг {}: {}\nТребование проверки: {}\nЗамечания Reviewer: {}\nПопытка исправления: {}",
+                goal, step.id, step.description, step.verification, review, attempt
+            );
+            let repair = crate::orchestration::run_named(config, "executor", workspace, &repair_prompt).await?;
+            feedback.push(format!("Executor repair {} step {}: {}", attempt, step.id, repair));
+
+            let repair_review_prompt = format!(
+                "Ты Reviewer. Не меняй файлы. Повторно проверь шаг {} после исправления.                  Требование: {}. Предыдущие замечания: {}. Ответь в первой строке строго PASS или FAIL, затем причины.",
+                step.id, step.verification, review
+            );
+            let repair_review = crate::orchestration::run_named(config, "reviewer", workspace, &repair_review_prompt).await?;
+            feedback.push(format!("Reviewer repair {} step {}: {}", attempt, step.id, repair_review));
+
+            if repair_review.trim_start().to_ascii_uppercase().starts_with("PASS") {
+                completed.push(step.id);
+                repaired = true;
+                break;
+            }
+        }
+
+        if !repaired {
+            return Ok(WorkflowResult {
+                goal: goal.into(),
+                plan: Some(plan),
+                completed_steps: completed,
+                status: "failed".into(),
+                feedback,
+            });
         }
     }
 
