@@ -60,6 +60,11 @@ pub fn native_tools() -> Vec<ToolInfo> {
             },"required":["query"]}),
         },
         ToolInfo {
+            name: "project_search".into(),
+            description: "Search text recursively in project source files. Skips .git, target and node_modules.".into(),
+            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","default":"."},"max_results":{"type":"integer","minimum":1,"maximum":100,"default":50}},"required":["query"]}),
+        },
+        ToolInfo {
             name: "read_file".into(),
             description: "Read a UTF-8 text file inside the workspace. Read only files relevant to the task.".into(),
             input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
