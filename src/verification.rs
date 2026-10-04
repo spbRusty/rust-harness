@@ -9,7 +9,7 @@ const TIMEOUT_SECS: u64 = 60;
 
 pub async fn verify(workspace: &Path) -> Result<String> {
     if workspace.join("Cargo.toml").exists() {
-        return run(workspace, "cargo", &["check"]).await;
+        return run(workspace, "cargo", &["test"]).await;
     }
 
     if workspace.join("package.json").exists() {
