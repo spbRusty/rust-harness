@@ -12,6 +12,12 @@ pub struct Config {
     pub mcp: Vec<McpConfig>,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self { model: ModelConfig::default(), workspace: WorkspaceConfig::default(), mcp: Vec::new() }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
     pub endpoint: String,
@@ -19,9 +25,7 @@ pub struct ModelConfig {
 }
 
 impl Default for ModelConfig {
-    fn default() -> Self {
-        Self { endpoint: "http://127.0.0.1:11434".into(), name: "qwen2.5:7b".into() }
-    }
+    fn default() -> Self { Self { endpoint: "http://127.0.0.1:11434".into(), name: "qwen2.5:7b".into() } }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -44,7 +48,7 @@ pub struct McpConfig {
 impl Config {
     pub fn load() -> Result<Self> {
         let path = PathBuf::from("harness.toml");
-        if !path.exists() { return Ok(Self { ..Default::default() }); }
+        if !path.exists() { return Ok(Self::default()); }
         let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         Ok(toml::from_str(&text).context("parse harness.toml")?)
     }
