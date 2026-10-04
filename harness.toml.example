@@ -1,0 +1,12 @@
+[model]
+endpoint = "http://127.0.0.1:11434"
+name = "qwen2.5:7b"
+
+[workspace]
+path = "."
+
+# MCP servers can be enabled later without changing the Rust core.
+# [[mcp]]
+# name = "playwright"
+# command = "npx"
+# args = ["@playwright/mcp@latest"]
