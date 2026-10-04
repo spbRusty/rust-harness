@@ -1,59 +1,121 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+
 use crate::{config::Config, mcp::McpClient, model, tools};
 
 const MAX_STEPS: usize = 12;
 
 pub async fn run(config: &Config, prompt: &str) -> Result<()> {
-    let workspace = config.workspace.path.canonicalize().context("workspace does not exist")?;
+    let workspace = config
+        .workspace
+        .path
+        .canonicalize()
+        .context("workspace does not exist")?;
+
     let native = tools::native_tools();
     let mut mcp_clients = Vec::new();
-    let mut mcp_tools = Vec::new();
+    let mut ollama_tools = Vec::new();
+
+    for tool in native {
+        ollama_tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema
+            }
+        }));
+    }
 
     for server in &config.mcp {
         let mut client = McpClient::spawn(&server.command, &server.args).await?;
         let result = client.list_tools().await?;
+
         if let Some(items) = result.get("tools").and_then(Value::as_array) {
             for tool in items {
-                if let Some(name) = tool.get("name").and_then(Value::as_str) {
-                    mcp_tools.push(json!({
-                        "type": "mcp",
-                        "server": server.name,
-                        "name": name,
-                        "description": tool.get("description").cloned().unwrap_or(Value::Null),
-                        "inputSchema": tool.get("inputSchema").cloned().unwrap_or(json!({"type":"object"}))
-                    }));
-                }
+                let Some(name) = tool.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+
+                let mut description = tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+
+                description = format!("[MCP server: {}] {}", server.name, description);
+
+                ollama_tools.push(json!({
+                    "type": "function",
+                    "function": {
+                        "name": format!("mcp__{}__{}", server.name, name),
+                        "description": description,
+                        "parameters": tool
+                            .get("inputSchema")
+                            .cloned()
+                            .unwrap_or_else(|| json!({"type":"object"}))
+                    }
+                }));
             }
         }
+
         mcp_clients.push((server.name.clone(), client));
     }
 
-    let tool_text = serde_json::to_string(&json!({"native":native,"mcp":mcp_tools}))?;
-    let mut conversation = format!(
-        "You are a local coding agent. Workspace: {}\nAvailable tools: {}\n\nUser task: {}\n\n\
-         If you need a tool, respond with ONLY a JSON object containing the keys \"tool\" and \"arguments\".\
-         For MCP tools also include the key \"mcp_server\".\
-         Arguments must exactly match the tool input schema. Never omit required arguments.\
-         When finished, answer normally.",
-        workspace.display(), tool_text, prompt
+    let system = format!(
+        "You are a local coding agent. Workspace: {}.          Use the available tools when you need information or need to modify files.          Do not guess file contents or project structure.          If the user asks you to inspect a project, actually read the relevant files before answering.",
+        workspace.display()
     );
 
+    let mut messages = vec![
+        model::Message {
+            role: "system".into(),
+            content: Some(system),
+            tool_calls: None,
+            tool_name: None,
+        },
+        model::Message {
+            role: "user".into(),
+            content: Some(prompt.into()),
+            tool_calls: None,
+            tool_name: None,
+        },
+    ];
+
     for _ in 0..MAX_STEPS {
-        let answer = model::generate(config, &conversation).await?;
-        if let Some(call) = parse_tool_call(&answer) {
-            match execute_call(&workspace, &mut mcp_clients, &call).await {
-                Ok(result) => conversation.push_str(&format!(
-                    "\n\nAssistant tool call: {}\nTool result: {}\nContinue the task.",
-                    answer, result
-                )),
-                Err(error) => conversation.push_str(&format!(
-                    "\n\nAssistant tool call: {}\nTool error: {}. Fix the arguments and retry.\nContinue the task.",
-                    answer, error
-                )),
+        let assistant = model::chat(config, &messages, &ollama_tools).await?;
+
+        if let Some(tool_calls) = &assistant.tool_calls {
+            if tool_calls.is_empty() {
+                println!("{}", assistant.content.unwrap_or_default());
+                return Ok(());
+            }
+
+            messages.push(assistant.clone());
+
+            for call in tool_calls {
+                let result = execute_call(
+                    &workspace,
+                    &mut mcp_clients,
+                    &call.function.name,
+                    call.function.arguments.clone(),
+                )
+                .await;
+
+                let content = match result {
+                    Ok(value) => value.to_string(),
+                    Err(error) => json!({"error": error.to_string()}).to_string(),
+                };
+
+                messages.push(model::Message {
+                    role: "tool".into(),
+                    content: Some(content),
+                    tool_calls: None,
+                    tool_name: Some(call.function.name.clone()),
+                });
             }
         } else {
-            println!("{answer}");
+            println!("{}", assistant.content.unwrap_or_default());
             return Ok(());
         }
     }
@@ -64,25 +126,23 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
 async fn execute_call(
     workspace: &std::path::Path,
     mcp_clients: &mut [(String, McpClient)],
-    call: &Value,
+    tool_name: &str,
+    arguments: Value,
 ) -> Result<Value> {
-    let tool_name = call.get("tool").and_then(Value::as_str).context("missing tool name")?;
-    let args = call.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    if let Some(rest) = tool_name.strip_prefix("mcp__") {
+        let (server, name) = rest
+            .split_once("__")
+            .context("invalid MCP tool name")?;
 
-    if let Some(server) = call.get("mcp_server").and_then(Value::as_str) {
-        let client = mcp_clients.iter_mut().find(|(name, _)| name == server).context("MCP server not found")?;
-        Ok(client.1.call_tool(tool_name, args).await?)
-    } else {
-        Ok(json!({"content": tools::execute(workspace, tool_name, args)?}))
+        let client = mcp_clients
+            .iter_mut()
+            .find(|(configured_name, _)| configured_name == server)
+            .context("MCP server not found")?;
+
+        return Ok(client.1.call_tool(name, arguments).await?);
     }
-}
 
-fn parse_tool_call(text: &str) -> Option<Value> {
-    let trimmed = text.trim();
-    let candidate = if trimmed.starts_with("```") {
-        trimmed.trim_matches('`').trim_start_matches("json").trim()
-    } else {
-        trimmed
-    };
-    serde_json::from_str::<Value>(candidate).ok().filter(|v| v.get("tool").and_then(Value::as_str).is_some())
+    Ok(json!({
+        "content": tools::execute(workspace, tool_name, arguments)?
+    }))
 }
