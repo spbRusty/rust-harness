@@ -5,6 +5,9 @@ use std::path::Path;
 use crate::{config::Config, model, planner::Plan, project_context::ProjectContext};
 
 const MAX_PLAN_STEPS: usize = 8;
+const MAX_REPAIRS: usize = 2;
+const MAX_FEEDBACK_ITEMS: usize = 8;
+const MAX_FEEDBACK_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowResult {
@@ -15,12 +18,17 @@ pub struct WorkflowResult {
     pub feedback: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ReviewResult {
+    status: String,
+    #[serde(default)]
+    findings: Vec<String>,
+}
+
 pub async fn build_plan(config: &Config, workspace: &Path, goal: &str) -> Result<Plan> {
     let context = ProjectContext::discover(workspace)?;
     let prompt = format!(
-        "Ты Planner. Не меняй файлы.\n{}\n\nЦель: {}\n\n" +
-        "Верни ТОЛЬКО JSON: {{\"goal\":\"...\",\"steps\":[{{\"id\":1,\"description\":\"...\",\"verification\":\"...\"}}]}}. " +
-        "Максимум {} коротких последовательных шагов.",
+        "Ты Planner. Не меняй файлы.\n{}\n\nЦель: {}\n\n         Верни ТОЛЬКО JSON: {{"goal":"...","steps":[{{"id":1,"description":"...","verification":"..."}}]}}.          Максимум {} коротких последовательных шагов.",
         context.prompt(), goal, MAX_PLAN_STEPS
     );
     let messages = vec![
@@ -39,57 +47,123 @@ fn extract_json(text: &str) -> Result<String> {
     Ok(text[start..=end].to_string())
 }
 
+fn parse_review(text: &str) -> Result<ReviewResult> {
+    let json = extract_json(text)?;
+    let review: ReviewResult = serde_json::from_str(&json)?;
+    if !matches!(review.status.to_ascii_lowercase().as_str(), "pass" | "fail") {
+        anyhow::bail!("reviewer returned invalid status: {}", review.status);
+    }
+    Ok(review)
+}
+
+fn compact_feedback(feedback: &[String]) -> String {
+    let start = feedback.len().saturating_sub(MAX_FEEDBACK_ITEMS);
+    let mut value = feedback[start..].join("\n");
+    if value.len() > MAX_FEEDBACK_CHARS {
+        value.truncate(MAX_FEEDBACK_CHARS);
+        value.push_str("\n...[feedback truncated]...");
+    }
+    value
+}
+
+fn review_prompt(step_id: usize, description: &str, verification: &str) -> String {
+    format!(
+        "Ты Reviewer. Не меняй файлы. Независимо проверь текущий workspace против шага {}.          Шаг: {}. Требование: {}.          Верни ТОЛЬКО JSON вида {{"status":"pass|fail","findings":["..."]}}.          status=pass только если требование реально выполнено; иначе fail.",
+        step_id, description, verification
+    )
+}
+
 pub async fn run(config: &Config, workspace: &Path, goal: &str) -> Result<WorkflowResult> {
     let plan = build_plan(config, workspace, goal).await?;
     if plan.steps.is_empty() {
-        return Ok(WorkflowResult { goal: goal.into(), plan: Some(plan), completed_steps: vec![], status: "failed".into(), feedback: vec!["Planner returned an empty plan".into()] });
+        return Ok(WorkflowResult {
+            goal: goal.into(),
+            plan: Some(plan),
+            completed_steps: vec![],
+            status: "failed".into(),
+            feedback: vec!["Planner returned an empty plan".into()],
+        });
     }
 
     let mut completed = Vec::new();
     let mut feedback = Vec::new();
+
     for step in &plan.steps {
+        let context = compact_feedback(&feedback);
         let executor_prompt = format!(
             "Ты Executor. Выполни ТОЛЬКО этот шаг.\nЦель: {}\nШаг {}: {}\nПроверка: {}\n{}",
-            goal, step.id, step.description, step.verification,
-            if feedback.is_empty() { String::new() } else { format!("Предыдущая обратная связь: {}", feedback.join("\n")) }
+            goal,
+            step.id,
+            step.description,
+            step.verification,
+            if context.is_empty() { String::new() } else { format!("Предыдущая обратная связь:\n{}", context) }
         );
+
         let result = crate::orchestration::run_named(config, "executor", workspace, &executor_prompt).await?;
         feedback.push(format!("Executor step {}: {}", step.id, result));
 
-        let review_prompt = format!(
-            "Ты Reviewer. Не меняй файлы. Проверь выполнение шага {}: {}. Ожидаемая проверка: {}. Ответь кратко: PASS или FAIL и причины.",
-            step.id, step.description, step.verification
-        );
-        let review = crate::orchestration::run_named(config, "reviewer", workspace, &review_prompt).await?;
+        let review = crate::orchestration::run_named(
+            config,
+            "reviewer",
+            workspace,
+            &review_prompt(step.id, &step.description, &step.verification),
+        ).await?;
         feedback.push(format!("Reviewer step {}: {}", step.id, review));
 
-        if review.trim_start().to_ascii_uppercase().contains("PASS") {
+        let parsed_review = match parse_review(&review) {
+            Ok(value) => value,
+            Err(error) => {
+                feedback.push(format!("Reviewer parse error step {}: {}", step.id, error));
+                return Ok(WorkflowResult {
+                    goal: goal.into(),
+                    plan: Some(plan),
+                    completed_steps: completed,
+                    status: "failed".into(),
+                    feedback,
+                });
+            }
+        };
+
+        if parsed_review.status.eq_ignore_ascii_case("pass") {
             completed.push(step.id);
             continue;
         }
 
-        const MAX_REPAIRS: usize = 2;
         let mut repaired = false;
+        let mut findings = parsed_review.findings.join("\n");
         for attempt in 1..=MAX_REPAIRS {
             let repair_prompt = format!(
-                "Ты Executor. Исправь только текущий шаг после замечаний Reviewer.                  Не начинай задачу заново. Проверь результат после исправления.                 \nЦель: {}\nШаг {}: {}\nТребование проверки: {}\nЗамечания Reviewer: {}\nПопытка исправления: {}",
-                goal, step.id, step.description, step.verification, review, attempt
+                "Ты Executor. Исправь ТОЛЬКО текущий шаг после замечаний Reviewer.                  Не начинай задачу заново. После исправления проверь результат.\n                 Цель: {}\nШаг {}: {}\nТребование проверки: {}\n                 Замечания Reviewer:\n{}\nПопытка исправления: {}",
+                goal, step.id, step.description, step.verification, findings, attempt
             );
+
             let repair = crate::orchestration::run_named(config, "executor", workspace, &repair_prompt).await?;
             feedback.push(format!("Executor repair {} step {}: {}", attempt, step.id, repair));
 
-            let repair_review_prompt = format!(
-                "Ты Reviewer. Не меняй файлы. Повторно проверь шаг {} после исправления.                  Требование: {}. Предыдущие замечания: {}. Ответь в первой строке строго PASS или FAIL, затем причины.",
-                step.id, step.verification, review
-            );
-            let repair_review = crate::orchestration::run_named(config, "reviewer", workspace, &repair_review_prompt).await?;
+            let repair_review = crate::orchestration::run_named(
+                config,
+                "reviewer",
+                workspace,
+                &review_prompt(step.id, &step.description, &step.verification),
+            ).await?;
             feedback.push(format!("Reviewer repair {} step {}: {}", attempt, step.id, repair_review));
 
-            if repair_review.trim_start().to_ascii_uppercase().starts_with("PASS") {
+            let parsed = match parse_review(&repair_review) {
+                Ok(value) => value,
+                Err(error) => {
+                    feedback.push(format!("Reviewer parse error repair {} step {}: {}", attempt, step.id, error));
+                    findings = error.to_string();
+                    continue;
+                }
+            };
+
+            if parsed.status.eq_ignore_ascii_case("pass") {
                 completed.push(step.id);
                 repaired = true;
                 break;
             }
+
+            findings = parsed.findings.join("\n");
         }
 
         if !repaired {
@@ -103,12 +177,43 @@ pub async fn run(config: &Config, workspace: &Path, goal: &str) -> Result<Workfl
         }
     }
 
-    Ok(WorkflowResult { goal: goal.into(), plan: Some(plan), completed_steps: completed, status: "done".into(), feedback })
+    Ok(WorkflowResult {
+        goal: goal.into(),
+        plan: Some(plan),
+        completed_steps: completed,
+        status: "done".into(),
+        feedback,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn extracts_json() { assert_eq!(extract_json("answer {\"goal\":\"x\"}").unwrap(), "{\"goal\":\"x\"}"); }
+    fn extracts_json() {
+        assert_eq!(
+            extract_json("answer {"goal":"x"}").unwrap(),
+            "{"goal":"x"}"
+        );
+    }
+
+    #[test]
+    fn parses_structured_review() {
+        let review = parse_review(r#"{"status":"pass","findings":[]}"#).unwrap();
+        assert_eq!(review.status, "pass");
+        assert!(review.findings.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_review_status() {
+        assert!(parse_review(r#"{"status":"maybe","findings":[]}"#).is_err());
+    }
+
+    #[test]
+    fn compacts_feedback() {
+        let feedback = vec!["a".to_string(); MAX_FEEDBACK_ITEMS + 2];
+        let compacted = compact_feedback(&feedback);
+        assert_eq!(compacted.lines().count(), MAX_FEEDBACK_ITEMS);
+    }
 }
