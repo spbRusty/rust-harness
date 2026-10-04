@@ -12,19 +12,11 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
         .canonicalize()
         .context("workspace does not exist")?;
 
-    let native = tools::native_tools();
+    let mut registry = tools::ToolRegistry::native();
     let mut mcp_clients = Vec::new();
-    let mut ollama_tools = Vec::new();
 
     for tool in native {
-        ollama_tools.push(json!({
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.input_schema
-            }
-        }));
+        registry.register(tool);
     }
 
     for server in &config.mcp {
@@ -63,9 +55,11 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
     }
 
     let system = format!(
-        "You are a local coding agent. Workspace: {}.          Use the available tools when you need information or need to modify files.          Do not guess file contents or project structure.          If the user asks you to inspect a project, actually read the relevant files before answering.",
+        "You are a local coding agent. Workspace: {}. Work iteratively and use tools instead of guessing. For project inspection, establish structure, locate relevant code, then read the files needed. Do not stop after one tool call if the request requires more evidence. Complete the requested inspection or change before answering. If you modify files, verify the result when practical.",
         workspace.display()
     );
+
+    let ollama_tools = registry.ollama_definitions();
 
     let mut messages = vec![
         model::Message {
