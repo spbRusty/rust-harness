@@ -38,6 +38,7 @@ pub struct RunState {
     pub verification_failures: usize,
     pub changed_files: Vec<String>,
     pub last_verification: Option<VerificationStatus>,
+    pub verification_pending: bool,
     pub stop_reason: Option<String>,
 }
 
@@ -50,6 +51,7 @@ impl Default for RunState {
             verification_failures: 0,
             changed_files: Vec::new(),
             last_verification: None,
+            verification_pending: false,
             stop_reason: None,
         }
     }
@@ -65,11 +67,13 @@ impl RunState {
         if !self.changed_files.iter().any(|item| item == &path) {
             self.changed_files.push(path);
         }
+        self.verification_pending = true;
     }
 
     pub fn record_verification(&mut self, status: VerificationStatus) {
         self.verification_cycles += 1;
         self.last_verification = Some(status);
+        self.verification_pending = false;
         if matches!(status, VerificationStatus::Failed | VerificationStatus::Error) {
             self.verification_failures += 1;
         }
@@ -81,10 +85,11 @@ impl RunState {
     }
 
     pub fn verification_successful(&self) -> bool {
-        matches!(
-            self.last_verification,
-            Some(VerificationStatus::Passed | VerificationStatus::Skipped)
-        )
+        !self.verification_pending
+            && matches!(
+                self.last_verification,
+                Some(VerificationStatus::Passed | VerificationStatus::Skipped)
+            )
     }
 }
 
@@ -102,11 +107,13 @@ mod tests {
 
         assert_eq!(state.iterations, 1);
         assert_eq!(state.changed_files, vec!["src/main.rs", "src/lib.rs"]);
+        assert!(state.verification_pending);
     }
 
     #[test]
     fn failed_verification_is_not_success() {
         let mut state = RunState::default();
+        state.record_changed_file("src/main.rs");
         state.record_verification(VerificationStatus::Failed);
 
         assert_eq!(state.verification_cycles, 1);
@@ -117,8 +124,21 @@ mod tests {
     #[test]
     fn passed_verification_is_success() {
         let mut state = RunState::default();
+        state.record_changed_file("src/main.rs");
         state.record_verification(VerificationStatus::Passed);
 
         assert!(state.verification_successful());
+        assert!(!state.verification_pending);
+    }
+
+    #[test]
+    fn new_change_requires_new_verification() {
+        let mut state = RunState::default();
+        state.record_changed_file("src/main.rs");
+        state.record_verification(VerificationStatus::Passed);
+        state.record_changed_file("src/lib.rs");
+
+        assert!(!state.verification_successful());
+        assert!(state.verification_pending);
     }
 }
