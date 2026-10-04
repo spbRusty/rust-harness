@@ -81,6 +81,10 @@ async fn execute_call(
         anyhow::bail!("tool permission denied");
     }
 
+    if tool_name == "run_command" {
+        return Ok(json!({"content": tools::execute_command(workspace, arguments).await?}));
+    }
+
     if let Some(rest) = tool_name.strip_prefix("mcp__") {
         let (server, name) = rest.split_once("__").context("invalid MCP tool name")?;
         let client = mcp_clients.iter_mut().find(|(configured_name, _)| configured_name == server).context("MCP server not found")?;
