@@ -33,17 +33,11 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
 
                 description = format!("[MCP server: {}] {}", server.name, description);
 
-                ollama_tools.push(json!({
-                    "type": "function",
-                    "function": {
-                        "name": format!("mcp__{}__{}", server.name, name),
-                        "description": description,
-                        "parameters": tool
-                            .get("inputSchema")
-                            .cloned()
-                            .unwrap_or_else(|| json!({"type":"object"}))
-                    }
-                }));
+                registry.register(tools::ToolInfo {
+                    name: format!("mcp__{}__{}", server.name, name),
+                    description,
+                    input_schema: tool.get("inputSchema").cloned().unwrap_or_else(|| json!({"type":"object"})),
+                });
             }
         }
 
