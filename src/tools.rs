@@ -90,6 +90,7 @@ struct SearchArgs {
     #[serde(default = "default_max_results")] max_results: usize,
 }
 fn default_path() -> String { ".".into() }
+fn default_max_results() -> usize { 50 }
 
 fn bound_output(mut value: String) -> String {
     if value.len() <= MAX_TOOL_OUTPUT { return value; }
