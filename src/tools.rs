@@ -113,6 +113,10 @@ pub fn execute(workspace: &Path, name: &str, arguments: Value) -> Result<String>
             fs::write(path, args.content)?;
             "written".into()
         }
+        "project_search" => {
+            let args: SearchArgs = serde_json::from_value(arguments)?;
+            project_search(workspace, &args)?
+        }
         "list_dir" => {
             let args: ListArgs = serde_json::from_value(arguments)?;
             let mut entries = Vec::new();
