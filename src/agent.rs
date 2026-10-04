@@ -15,10 +15,6 @@ pub async fn run(config: &Config, prompt: &str) -> Result<()> {
     let mut registry = tools::ToolRegistry::native();
     let mut mcp_clients = Vec::new();
 
-    for tool in native {
-        registry.register(tool);
-    }
-
     for server in &config.mcp {
         let mut client = McpClient::spawn(&server.command, &server.args).await?;
         let result = client.list_tools().await?;
